@@ -1,5 +1,7 @@
 mod protocol;
-mod command;
+mod commands;
+// TODO - things to look at while builing this code
+// 1. Axum for restful APIs
 
 
 // TODO - this is scratch code as I try to figure out things in Rust
