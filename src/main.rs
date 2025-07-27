@@ -1,5 +1,6 @@
-mod protocol;
+
 mod commands;
+mod tokenizer;
 // TODO - things to look at while builing this code
 // 1. Axum for restful APIs
 
@@ -11,16 +12,16 @@ struct Point<X1:Clone, Y1:Clone> {
 }
 
 impl<X1:Clone,Y1:Clone> Point<X1,Y1> {
-    fn get_X(&self) -> &X1 {
+    fn get_x(&self) -> &X1 {
         &self.x
     }
-    fn get_Y(&self) -> &Y1 {
+    fn get_y(&self) -> &Y1 {
         &self.y
     }
     fn mixup<X2:Clone, Y2:Clone>(&self, other: &Point<X2, Y2>) -> Point<X1, Y2> {
         Point {
-            x: self.get_X().clone(), // Assuming X1 implements Clone
-            y: other.get_Y().clone(), // Assuming Y2 implements Clone
+            x: self.get_x().clone(), // Assuming X1 implements Clone
+            y: other.get_y().clone(), // Assuming Y2 implements Clone
         }
     }
 }
