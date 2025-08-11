@@ -44,7 +44,7 @@ fn validate_request_structure(tokens: &[Token]) -> Result<Vec<String>, ParserErr
     let mut response: Vec<String> = Vec::new();
     let num_children = get_number_of_chars(&tokens[0])?;
 
-    for mut index in (1..tokens.len()).step_by(2) {
+    for index in (1..tokens.len()).step_by(2) {
         if tokens[index].value[0] != b'$' {
             return Err(ParserError::new(INVALID_NO_SIZE_TOKEN));
         }

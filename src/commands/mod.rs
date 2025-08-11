@@ -1,3 +1,4 @@
+use crate::{string_executor, tokenizer};
 
 #[derive(Debug)]
 pub struct ParserError {
@@ -7,6 +8,22 @@ pub struct ParserError {
 impl ParserError {
     pub fn new(message: &str) -> Self {
         ParserError {
+            message: message.to_string(),
+        }
+    }
+    pub fn get_message(&self) -> &str {
+        &self.message
+    }
+}
+
+#[derive(Debug)]
+pub struct ExecutionError {
+    message: String,
+}
+
+impl ExecutionError {
+    pub fn new(message: &str) -> Self {
+        ExecutionError {
             message: message.to_string(),
         }
     }
@@ -63,92 +80,49 @@ impl RedisCommand {
     }
 }
 
-pub mod command {
+const UNKNOWN_COMMAND: &'static str = "Unknown command";
 
-    use super::{RedisCommand, RedisCommandType};
-    use super::ParserError;
-    // use crate::protocol::protocol::{Identifier, IdentifierType};
+pub fn identify_command(request: &[u8]) -> Result<RedisCommand, ParserError> {
+    let identifiers = tokenizer::identify_command(request)?;
+    let command = &identifiers[0];
+    if string_executor::is_string_command(command) {
+         string_executor::build_string_command(command, &identifiers)
+    } else {
+         Err(ParserError::new(UNKNOWN_COMMAND))
+    }
 
-    // const REDIS_STRING_COMMANDS: [&str; 2] = ["GET", "SET"];
+}
 
-    //
-    //
-    //
-    // pub fn identify_command(identifiers: &[IdentifierType]) -> Result<RedisCommand, ParserError> {
-    //     use super::RedisCommand;
-    //
-    //     if identifiers.is_empty() {
-    //         return Err(ParserError::new("No identifiers provided"));
-    //     }
-    //
-    //     let command = &identifiers[0];
-    //     match command.get_identifier() {
-    //         Identifier::String(identifier) => {
-    //             if is_string_command(identifier) {
-    //                 return build_string_command(identifier, identifiers);
-    //             } else {
-    //                 Err(ParserError::new("Unsupported string command type"))
-    //             }
-    //         }
-    //         _ => {
-    //             // Handle other identifier types
-    //             Err(ParserError::new("Unsupported identifier type"))
-    //         }
-    //     }
-    // }
-    //
-    // fn is_string_command(command: &str) -> bool {
-    //     REDIS_STRING_COMMANDS.iter().any(|&cmd| cmd.eq_ignore_ascii_case(command))
-    // }
-    //
-    // fn build_string_command(command: &str, identifiers: &[IdentifierType]) -> Result<RedisCommand, ParserError> {
-    //     // support syntax: GET name
-    //     //                 SET name value
-    //
-    //     if identifiers.len() < 2 {
-    //         return Err(ParserError::new("Not enough identifiers provided for string command"));
-    //     }
-    //
-    //     let command_type: RedisCommandType;
-    //     let target:String;
-    //     let action:String;
-    //     let params: mut Vec<String> = Vec::new();
-    //
-    //     // CMC - start here. issue is that the vector must be of the same type. Does the protocol care about the integer type, or are all of these bulk strings?
-    //
-    //     match command {
-    //         "GET" => {
-    //             if identifiers.len() != 2 {
-    //                 return Err(ParserError::new("GET command requires exactly one parameter"));
-    //             }
-    //             command_type = RedisCommandType::StringCommand;
-    //             action = "GET".to_string();
-    //             match (identifiers[1].get_identifier()) {
-    //                 Identifier::String(name) => {
-    //                     target = name.clone();
-    //                     params = vec![];
-    //                 },
-    //                 _ => return Err(ParserError::new("GET command requires a string parameter")),
-    //             }
-    //         },
-    //         "SET" => {
-    //             if identifiers.len() != 3 {
-    //                 return Err(ParserError::new("SET command requires two parameter"));
-    //             }
-    //             command_type = RedisCommandType::StringCommand;
-    //             action = "SET".to_string();
-    //             match (identifiers[1].get_identifier()) {
-    //                 Identifier::String(name) => {
-    //                     target = name.clone();
-    //                     params = vec![];
-    //                 },
-    //                 _ => return Err(ParserError::new("GET command requires a string parameter")),
-    //             }
-    //         },
-    //         _ => return Err(ParserError::new("Unsupported string command type")),
-    //     }
-    //
-    //
-    //     Ok(RedisCommand::new(command_type, target, action, params))
-    // }
+mod tests {
+    use crate::commands::identify_command;
+
+    #[test]
+    fn given_get_string_then_return_get_command() {
+        let request = b"*2\r\n$3\r\nGET\r\n$8\r\nMyString\r\n";
+        let command = identify_command(request);
+        match command {
+            Ok(cmd) => {
+                assert_eq!(cmd.get_action(), "GET");
+                assert_eq!(cmd.get_target(), "MyString");
+                assert_eq!(cmd.get_params().len(), 0);
+            },
+            Err(e) => panic!("Expected command, got error: {}", e.get_message()),
+        }
+    }
+
+    #[test]
+    fn given_set_string_then_return_set_command() {
+        let request = b"*3\r\n$3\r\nSET\r\n$8\r\nMyString\r\n$5\r\nValue\r\n";
+        let command = identify_command(request);
+        match command {
+            Ok(cmd) => {
+                assert_eq!(cmd.get_action(), "SET");
+                assert_eq!(cmd.get_target(), "MyString");
+                assert_eq!(cmd.get_params().len(), 1);
+                assert_eq!(cmd.get_params()[0], "Value");
+            },
+            Err(e) => panic!("Expected command, got error: {}", e.get_message()),
+        }
+    }
+
 }
