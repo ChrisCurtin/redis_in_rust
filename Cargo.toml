@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 app_properties = "0.1.2"
+bytes = "1.10.1"
