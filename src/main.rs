@@ -4,12 +4,9 @@ mod tokenizer;
 mod string_executor;
 mod thread_pool;
 mod controller;
-// TODO - things to look at while builing this code
-// 1. Axum for restful APIs
-
-
+mod index;
 
 fn main() {
+    env_logger::init();
     controller::initialize_controller();
-
 }
