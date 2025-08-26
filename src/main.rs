@@ -7,6 +7,6 @@ mod controller;
 mod index;
 
 fn main() {
+    env_logger::init();
     controller::initialize_controller();
-
 }
