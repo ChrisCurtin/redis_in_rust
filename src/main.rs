@@ -7,6 +7,7 @@ mod controller;
 mod index;
 
 fn main() {
+    // ./redli -h localhost -p 6379 --debug
     env_logger::init();
     controller::initialize_controller();
 }

@@ -59,8 +59,6 @@ pub fn initialize_controller() {
 }
 
 fn handle_connection(mut stream: TcpStream, index: &Arc<Index>, databases: &Arc<Databases>) {
-    // ./redli -h localhost -p 6379 --debug
-
     loop {
         // Wrap the stream in a BufReader, so we can use the BufRead methods
         let mut reader = io::BufReader::new(&mut stream);

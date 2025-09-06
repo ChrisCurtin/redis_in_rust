@@ -117,6 +117,27 @@ impl StringExecutor {
             ))
         }
     }
+    
+    pub fn delete(&self, key: &str) -> u16{
+        self.data.del(key);
+        1 // removed the single key
+    }
+
+    pub fn rename(&self, old_key: &str, new_key: &str) -> bool {
+        if let Some(value) = self.data.get(old_key) {
+            self.data.set(new_key, &value);
+            self.data.del(old_key);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn internal_exists(&self, key: &str) -> bool {
+        // This is kind of ugly, but we need a way to confirm that the Index actually removed this key vs. only from its internal storage
+        self.data.get(key).is_some()
+    }
+
 }
 
 #[derive(Debug)]
