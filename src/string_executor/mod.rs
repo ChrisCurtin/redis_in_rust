@@ -6,7 +6,7 @@ use bytes::{Bytes, BytesMut};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-const REDIS_STRING_COMMANDS: [&str; 2] = ["GET", "SET"];
+const REDIS_STRING_COMMANDS: [&str; 6] = ["GET", "SET", "INCR", "INCRBY", "DECR", "DECRBY"];
 
 pub struct StringExecutor {
     data: InternalStorage,
@@ -28,6 +28,10 @@ impl StringExecutor {
     pub fn build_command(command: &Vec<String>) -> Result<CommandIdentifier, ParserError> {
         // support syntax: GET name
         //                 SET name value
+        //                 INCR name
+        //                 INCRBY name increment
+        //                 DECR name
+        //                 DECRBY name decrement
 
         if command.len() < 2 {
             return Err(ParserError::new(
@@ -64,6 +68,44 @@ impl StringExecutor {
                 params.push(command[2].as_bytes().to_vec().into());
                 lock_type = Write
             }
+            "INCR" => {
+                if command.len() != 2 {
+                    return Err(ParserError::new("INCR command requires one parameter"));
+                }
+                command_type = RedisCommandType::StringCommand;
+                action = "INCR".to_string();
+                target = command[1].clone();
+                lock_type = Write
+            }
+            "INCRBY" => {
+                if command.len() != 3 {
+                    return Err(ParserError::new("INCRBY command requires two parameter"));
+                }
+                command_type = RedisCommandType::StringCommand;
+                action = "INCRBY".to_string();
+                target = command[1].clone();
+                params.push(command[2].as_bytes().to_vec().into());
+                lock_type = Write
+            }
+            "DECR" => {
+                if command.len() != 2 {
+                    return Err(ParserError::new("INCR command requires one parameter"));
+                }
+                command_type = RedisCommandType::StringCommand;
+                action = "DECR".to_string();
+                target = command[1].clone();
+                lock_type = Write
+            }
+            "DECRBY" => {
+                if command.len() != 3 {
+                    return Err(ParserError::new("DECRBY command requires two parameter"));
+                }
+                command_type = RedisCommandType::StringCommand;
+                action = "DECRBY".to_string();
+                target = command[1].clone();
+                params.push(command[2].as_bytes().to_vec().into());
+                lock_type = Write
+            }
             _ => return Err(ParserError::new("Unsupported string command type")),
         }
 
@@ -81,41 +123,109 @@ impl StringExecutor {
         &self,
         command: &CommandIdentifier,
     ) -> Result<CommandCompleted, ExecutionError> {
-        if command.get_action() == "GET" {
-            match self.data.get(&command.get_target()) {
-                Some(value) => {
-                    let mut buf = BytesMut::with_capacity(1 + value.len() + 2);
-                    buf.extend_from_slice(b"+");
-                    buf.extend_from_slice(&value);
-                    buf.extend_from_slice(b"\r\n");
-                    Ok(CommandCompleted::new(
+
+        match command.get_action() {
+            "GET" => {
+                match self.data.get(&command.get_target()) {
+                    Some(value) => {
+                        let mut buf = BytesMut::with_capacity(1 + value.len() + 2);
+                        buf.extend_from_slice(b"+");
+                        buf.extend_from_slice(&value);
+                        buf.extend_from_slice(b"\r\n");
+                        Ok(CommandCompleted::new(
+                            command.get_target(),
+                            KeyType::String,
+                            NoImpact,
+                            buf.freeze(),
+                        ))
+                    }
+                    None => Ok(CommandCompleted::new(
                         command.get_target(),
                         KeyType::String,
                         NoImpact,
-                        buf.freeze(),
-                    ))
+                        Bytes::from("+(nil)\r\n"),
+                    )),
                 }
-                None => Ok(CommandCompleted::new(
+            }
+            "SET" => {
+                let value = command.get_params()[0].clone();
+                self.data.set(&command.get_target(), &value);
+                Ok(CommandCompleted::new(
                     command.get_target(),
                     KeyType::String,
-                    NoImpact,
-                    Bytes::from("+(nil)\r\n"),
-                )),
+                    Add,
+                    Bytes::from("+OK\r\n"),
+                ))
             }
-        } else if command.get_action() == "SET" {
-            let value = command.get_params()[0].clone();
-            self.data.set(&command.get_target(), &value);
-            Ok(CommandCompleted::new(
-                command.get_target(),
-                KeyType::String,
-                Add,
-                Bytes::from("+OK\r\n"),
-            ))
-        } else {
-            Err(ExecutionError::new(
-                "-WRONGTYPE Operation against a key holding the wrong kind of value",
-            ))
+            "INCR" => {
+               self.adjust_value_if_exists(command, 1)
+            }
+            "INCRBY" => {
+                let value = command.get_params()[0].clone();
+                let adjustment = std::str::from_utf8(&value).unwrap().parse::<i64>().unwrap();
+                self.adjust_value_if_exists(command, adjustment)
+            }
+            "DECR" => {
+                self.adjust_value_if_exists(command, -1)
+            }
+            "DECRBY" => {
+                let value = command.get_params()[0].clone();
+                let adjustment = std::str::from_utf8(&value).unwrap().parse::<i64>().unwrap();
+                self.adjust_value_if_exists(command, -adjustment)
+            }
+            _ => {
+                Err(ExecutionError::new(
+                    "-WRONGTYPE Operation against a key holding the wrong kind of value",
+                ))
+            }
         }
+
+    }
+
+    fn adjust_value_if_exists(&self, command: &CommandIdentifier, adjustment: i64) -> Result<CommandCompleted, ExecutionError> {
+        let updated_value: Bytes;
+        let mut impact_on_index = NoImpact;
+        match self.data.get(&command.get_target()) {
+            Some(value) => {
+                match std::str::from_utf8(&value) {
+                    Ok(str_val) => {
+                        match str_val.parse::<i64>() {
+                            Ok(int_val) => {
+                                let new_val = int_val + adjustment;
+                                updated_value = Bytes::from(new_val.to_string());
+                                self.data.set(&command.get_target(), &updated_value);
+                            }
+                            Err(_) => {
+                                return Err(ExecutionError::new(
+                                    "-ERR value is not an integer or out of range",
+                                ));
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        return Err(ExecutionError::new(
+                            "-ERR value is not an integer or out of range",
+                        ));
+                    }
+                }
+            }
+            None => {
+                updated_value = Bytes::from(adjustment.to_string());
+                impact_on_index = Add;
+                self.data.set(&command.get_target(), &updated_value);
+            }
+        }
+
+        let mut buf = BytesMut::with_capacity(1 + updated_value.len() + 2);
+        buf.extend_from_slice(b"+");
+        buf.extend_from_slice(&updated_value);
+        buf.extend_from_slice(b"\r\n");
+        Ok(CommandCompleted::new(
+            command.get_target(),
+            KeyType::String,
+            impact_on_index,
+            buf.freeze(),
+        ))
     }
     
     pub fn delete(&self, key: &str) -> u16{
@@ -184,7 +294,7 @@ mod tests {
     #[test]
     fn given_valid_key_when_get_return_value() {
         let obj = StringExecutor::new();
-        setup_db(&obj);
+        setup_db_with_string(&obj);
         let command = CommandIdentifier::new(
             RedisCommandType::StringCommand,
             "key".to_string(),
@@ -212,7 +322,165 @@ mod tests {
         assert_eq!(result.unwrap().get_response(), "+(nil)\r\n".as_bytes());
     }
 
-    fn setup_db(db: &StringExecutor) {
+    #[test]
+    fn given_key_does_not_exist_when_incr_create_key_with_value_1() {
+        let db = StringExecutor::new();
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "INCR".to_string(),
+            Vec::new(),
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+1\r\n");
+    }
+
+    #[test]
+    fn given_valid_int_in_str_when_incr_increase_value() {
+        let db = StringExecutor::new();
+        setup_db_with_int(&db);
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "INCR".to_string(),
+            Vec::new(),
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+11\r\n");
+    }
+
+    #[test]
+    fn given_valid_int_in_str_when_incrby_increase_value() {
+        let db = StringExecutor::new();
+        setup_db_with_int(&db);
+
+        let mut value = Vec::new();
+        value.push(Bytes::from("10"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "INCRBY".to_string(),
+            value,
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+20\r\n");
+    }
+
+    #[test]
+    fn given_valid_int_in_str_when_decr_decrease_value() {
+        let db = StringExecutor::new();
+        setup_db_with_int(&db);
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "DECR".to_string(),
+            Vec::new(),
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+9\r\n");
+    }
+
+    #[test]
+    fn given_key_does_not_exist_when_decr_create_key_with_value_minus_1() {
+        let db = StringExecutor::new();
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "DECR".to_string(),
+            Vec::new(),
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+-1\r\n");
+    }
+
+    #[test]
+    fn given_valid_int_in_str_when_decrby_decrease_value() {
+        let db = StringExecutor::new();
+        setup_db_with_int(&db);
+
+        let mut value = Vec::new();
+        value.push(Bytes::from("4"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "DECRBY".to_string(),
+            value,
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+6\r\n");
+    }
+
+    #[test]
+    fn given_no_key_exists_when_decrby_decrease_value() {
+        let db = StringExecutor::new();
+        let mut value = Vec::new();
+        value.push(Bytes::from("4"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "DECRBY".to_string(),
+            value,
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+-4\r\n");
+    }
+
+    #[test]
+    fn give_string_key_when_incr_return_error() {
+        let db = StringExecutor::new();
+        setup_db_with_string(&db);
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "INCR".to_string(),
+            Vec::new(),
+            KeyType::String,
+            Write,
+        );
+        let incr_result = db.execute_string_command(&command);
+        assert!(incr_result.is_err());
+        let err = incr_result.err().unwrap();
+        assert_eq!(err.get_message(), "-ERR value is not an integer or out of range");
+    }
+
+
+    #[test]
+    fn given_non_numeric_value_when_incr_return_error() {
+        let db = StringExecutor::new();
+        setup_db_with_string(&db);
+
+        // Now try to INCR the non-numeric value
+        let incr_command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "INCR".to_string(),
+            Vec::new(),
+            KeyType::String,
+            Write,
+        );
+        let incr_result = db.execute_string_command(&incr_command);
+        assert!(incr_result.is_err());
+        let err = incr_result.err().unwrap();
+        assert_eq!(err.get_message(), "-ERR value is not an integer or out of range");
+    }
+
+
+
+    fn setup_db_with_string(db: &StringExecutor) {
         let mut value = Vec::new();
         value.push(Bytes::from("value"));
         let command = CommandIdentifier::new(
@@ -226,4 +494,20 @@ mod tests {
         let result = db.execute_string_command(&command);
         assert_eq!(result.unwrap().get_response(), "+OK\r\n".as_bytes());
     }
+
+    fn setup_db_with_int(db: &StringExecutor) {
+        let mut value = Vec::new();
+        value.push(Bytes::from("10"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "SET".to_string(),
+            value,
+            KeyType::String,
+            Write,
+        );
+        let result = db.execute_string_command(&command);
+        assert_eq!(result.unwrap().get_response(), "+OK\r\n".as_bytes());
+    }
+
 }
