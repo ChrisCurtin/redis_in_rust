@@ -10,6 +10,7 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::Arc,
 };
+use crate::list_executor::ListExecutor;
 
 const HOME: &'static str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 6379;
@@ -17,6 +18,7 @@ const DEFAULT_THREAD_POOL_SIZE: usize = 4;
 
 pub struct Databases {
     pub string: Arc<StringExecutor>,
+    pub list: Arc<ListExecutor>
 }
 
 pub fn initialize_controller() {
@@ -43,6 +45,7 @@ pub fn initialize_controller() {
 
     let databases = Arc::new(Databases {
         string: Arc::new(StringExecutor::new()),
+        list: Arc::new(ListExecutor::new()),
     });
 
     for stream in listener.incoming() {

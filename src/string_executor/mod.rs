@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 const REDIS_STRING_COMMANDS: [&str; 6] = ["GET", "SET", "INCR", "INCRBY", "DECR", "DECRBY"];
 
-pub struct StringExecutor {
+pub (crate) struct StringExecutor {
     data: InternalStorage,
 }
 
@@ -119,7 +119,7 @@ impl StringExecutor {
         ))
     }
 
-    pub fn execute_string_command(
+    pub fn execute_command(
         &self,
         command: &CommandIdentifier,
     ) -> Result<CommandCompleted, ExecutionError> {
@@ -303,7 +303,7 @@ mod tests {
             KeyType::String,
             Read,
         );
-        let result = obj.execute_string_command(&command);
+        let result = obj.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+value\r\n".as_bytes());
     }
 
@@ -318,7 +318,7 @@ mod tests {
             KeyType::String,
             Read,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+(nil)\r\n".as_bytes());
     }
 
@@ -333,7 +333,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+1\r\n");
     }
 
@@ -349,7 +349,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+11\r\n");
     }
 
@@ -368,7 +368,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+20\r\n");
     }
 
@@ -384,7 +384,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+9\r\n");
     }
 
@@ -399,7 +399,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+-1\r\n");
     }
 
@@ -418,7 +418,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+6\r\n");
     }
 
@@ -435,7 +435,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+-4\r\n");
     }
 
@@ -451,7 +451,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let incr_result = db.execute_string_command(&command);
+        let incr_result = db.execute_command(&command);
         assert!(incr_result.is_err());
         let err = incr_result.err().unwrap();
         assert_eq!(err.get_message(), "-ERR value is not an integer or out of range");
@@ -472,7 +472,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let incr_result = db.execute_string_command(&incr_command);
+        let incr_result = db.execute_command(&incr_command);
         assert!(incr_result.is_err());
         let err = incr_result.err().unwrap();
         assert_eq!(err.get_message(), "-ERR value is not an integer or out of range");
@@ -491,7 +491,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+OK\r\n".as_bytes());
     }
 
@@ -506,7 +506,7 @@ mod tests {
             KeyType::String,
             Write,
         );
-        let result = db.execute_string_command(&command);
+        let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+OK\r\n".as_bytes());
     }
 

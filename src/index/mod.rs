@@ -9,7 +9,8 @@ use crate::controller::Databases;
 use crate::index::IndexImpactOnCompletion::{Delete, NoImpact};
 use crate::index::KeyType::Undefined;
 use crate::index::LockType::{Read, Write};
-use crate::index::RedisCommandType::{UnknownCommand, StringCommand, IndexCommand};
+use crate::index::RedisCommandType::{UnknownCommand, StringCommand, ListCommand, IndexCommand};
+use crate::list_executor::ListExecutor;
 use crate::string_executor::StringExecutor;
 
 // What kind of lock do we need on the Index for this command?
@@ -33,6 +34,7 @@ pub enum IndexImpactOnCompletion {
 pub enum RedisCommandType {
     UnknownCommand,
     StringCommand,
+    ListCommand,
     IndexCommand
     // Add other command types as needed
 }
@@ -136,6 +138,8 @@ impl Index {
                 StringExecutor::build_command(&request)?
             } else if self.is_index_command(&command) {
                 self.build_index_command(&request)?
+            } else if ListExecutor::is_command_supported(&command) {
+                ListExecutor::build_command(&request)?
             } else {
                 Err(ExecutionError::new("Unknown Command"))?
             };
@@ -171,7 +175,10 @@ impl Index {
             match execution_context.get_command_type() {
                 UnknownCommand => { Ok(CommandCompleted::default()) } // We should never get here, but we need the case to be certain all the RedisCommandTypes are covered
                 StringCommand => {
-                    StringExecutor::execute_string_command(&databases.string, &execution_context)
+                    StringExecutor::execute_command(&databases.string, &execution_context)
+                }
+                ListCommand => {
+                    ListExecutor::execute_command(&databases.list, &execution_context)
                 }
                 IndexCommand => {
                     self.execute_index_command(index, &databases, &execution_context, &key_type)
@@ -348,7 +355,6 @@ pub enum KeyType {
     Undefined,
     Index, // Not really a 'type' but, the command is executing against the index
     String,
-    Integer,
     List
 }
 
@@ -373,6 +379,7 @@ mod tests {
     use crate::controller::Databases;
     use crate::index::{Index};
     use crate::string_executor::StringExecutor;
+    use crate::list_executor::ListExecutor;
 
     #[test]
     fn given_unknown_command_return_error() {
@@ -547,6 +554,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn given_rpush_for_empty_index_when_execute_command_then_index_is_updated() {
+        let index = Arc::new(Index::new());
+        let databases = Arc::new(setup_databases());
+        let request = vec!["RPUSH".to_string(), "Key".to_string(), "FirstPush".to_string()];
+        match index.execute_command(&databases, &request) {
+            Ok(response) => {
+                assert_eq!(response, b":1\r\n".as_ref())
+            },
+            Err(error) => panic!("Error executing command: {:?}", error)
+        }
+    }
+
     fn set_a_string_value(index: &Arc<Index>, databases: &Arc<Databases>, key: &str, value: &str) -> Result<Bytes, ExecutionError> {
         // common setup for all tests
         let request = vec!["SET".to_string(), key.to_string(), value.to_string()];
@@ -556,9 +576,10 @@ mod tests {
 
     // TODO test - given a SET, followed by another command type, fail because the key exists as a string already
 
-        fn setup_databases() -> Databases {
+    fn setup_databases() -> Databases {
         Databases {
-            string : Arc::new(StringExecutor::new())
+            string : Arc::new(StringExecutor::new()),
+            list: Arc::new(ListExecutor::new())
         }
     }
 
