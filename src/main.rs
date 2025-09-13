@@ -5,6 +5,7 @@ mod string_executor;
 mod thread_pool;
 mod controller;
 mod index;
+mod list_executor;
 
 fn main() {
     // ./redli -h localhost -p 6379 --debug
