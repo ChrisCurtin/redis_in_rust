@@ -1,5 +1,8 @@
-// TODO add   LSET, LREM, LRANGE
-// TODO add support for multiple adds for LPUSH and RPUSH, RPOP and LPOP
+// TODO add   LSET, LREM, LRANGE, LPOS, RPOS
+// TODO add support for  RPOP and LPOP; refactor RPOP so the logic can be used for LPOP
+// TODO add support LINDEX with a negative index
+// TODO - skip the first 3/4 but interesting way of doing the parsing https://blog.sheerluck.dev/posts/learn-rust-structs-enums-pattern-matching-by-building-a-json-parser/
+
 
 use crate::commands::{ExecutionError, ParserError};
 use crate::index::IndexImpactOnCompletion::{Add, Delete, NoImpact};
@@ -69,9 +72,9 @@ impl ListExecutor {
                 lock_type = Read
             }
             "RPUSH" => {
-                if command.len() != 3 {
+                if command.len() < 3 {
                     return Err(ParserError::new(
-                        "RPUSH command requires exactly two parameters",
+                        "RPUSH command requires exactly at least two parameters",
                     ));
                 }
                 command_type = RedisCommandType::ListCommand;
@@ -81,20 +84,23 @@ impl ListExecutor {
                 lock_type = Write
             }
             "RPOP" => {
-                if command.len() != 2 {
+                if command.len() < 2 || command.len() > 3 {
                     return Err(ParserError::new(
-                        "RPOP command requires exactly one parameters",
+                        "RPOP command requires either one parameter or two parameters",
                     ));
                 }
                 command_type = RedisCommandType::ListCommand;
                 action = "RPOP".to_string();
                 target = command[1].clone();
+                if command.len() == 3 {
+                    params.push(command[2].as_bytes().to_vec().into());
+                }
                 lock_type = Write
             }
             "LPUSH" => {
-                if command.len() != 3 {
+                if command.len() < 3 {
                     return Err(ParserError::new(
-                        "LPUSH command requires exactly two parameters",
+                        "LPUSH command requires at least two parameters",
                     ));
                 }
                 command_type = RedisCommandType::ListCommand;
@@ -185,7 +191,9 @@ impl ListExecutor {
                         values.get_mut(command.get_target()).unwrap()
                     }
                 };
-                entries.push_back(command.get_params()[0].clone());
+                for value in command.get_params() {
+                    entries.push_back(value.clone());
+                }
                 let length = entries.len();
 
                 Ok(CommandCompleted::new(
@@ -200,26 +208,41 @@ impl ListExecutor {
                 let entries = values.get_mut(command.get_target());
                 let mut index_impact = NoImpact;
                 let response: Bytes;
+                let mut drop_index = false;
+                let mut removed_values: Vec<Bytes> = Vec::new();
+                let mut count: usize = 1;
+
                 match entries {
                     Some(entry) => {
-                        match entry.pop_back() {
-                            Some(value) => {
-                                if entry.is_empty() {
-                                    values.remove(command.get_target());
-                                    index_impact = Delete;
+                        if command.get_params().len() != 0 {
+                            count = Self::index_from_bytes(&command.get_params()[0])?;
+                        }
+
+                        for _ in 0..count {
+                            match entry.pop_back() {
+                                Some(value) => {
+                                    removed_values.push(value);
+                                    if entry.is_empty() {
+                                        drop_index = true;
+                                    }
                                 }
-                                response = Self::format_string_response(&value);
-                            }
-                            _ => {
-                                response = Self::format_null_response();
+                                _ => break,
                             }
                         }
                     }
-                    None => {
-                        response = Self::format_null_response();
-                    }
+                    None => {}
                 }
-
+                if drop_index {
+                    values.remove(command.get_target());
+                    index_impact = Delete;
+                }
+                response = if removed_values.len() == 0 {
+                    Self::format_null_response()
+                } else if removed_values.len() == 1 {
+                    Self::format_string_response(&removed_values[0])
+                } else {
+                    Self::format_array_response(&removed_values)
+                };
 
                 Ok(CommandCompleted::new(
                     command.get_target(),
@@ -240,7 +263,9 @@ impl ListExecutor {
                         values.get_mut(command.get_target()).unwrap()
                     }
                 };
-                entries.push_front(command.get_params()[0].clone());
+                for value in command.get_params() {
+                    entries.push_front(value.clone());
+                }
                 let length = entries.len();
 
                 Ok(CommandCompleted::new(
@@ -302,6 +327,18 @@ impl ListExecutor {
         buf.extend_from_slice(b"+");
         buf.extend_from_slice(&value);
         buf.extend_from_slice(b"\r\n");
+        buf.freeze()
+    }
+
+    fn format_array_response(values: &Vec<Bytes>) -> Bytes {
+        let mut buf = BytesMut::with_capacity(1 + values.len() * 2 + 2);
+        buf.extend_from_slice(b"*");
+        buf.extend_from_slice(values.len().to_string().as_bytes());
+        buf.extend_from_slice(b"\r\n");
+        for value in values {
+            buf.extend_from_slice(value);
+            buf.extend_from_slice(b"\r\n");
+        }
         buf.freeze()
     }
 
@@ -478,6 +515,46 @@ mod tests {
     }
 
     #[test]
+    fn given_empty_list_when_multi_rpush_then_add_to_list() {
+        let db = ListExecutor::new();
+        let mut value = Vec::new();
+        value.push(Bytes::from("FirstPush"));
+        value.push(Bytes::from("SecondPush"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "RPUSH".to_string(),
+            value,
+            KeyType::List,
+            Write
+        );
+        let result = db.execute_command(&command);
+        assert_eq!(result.unwrap().get_response(), ":2\r\n");
+        assert_eq!(db.internal_get_length(), 1);
+        assert_eq!(db.internal_get_list_length("key"), 2);
+    }
+
+    #[test]
+    fn given_empty_list_when_multi_lpush_then_add_to_list() {
+        let db = ListExecutor::new();
+        let mut value = Vec::new();
+        value.push(Bytes::from("FirstPush"));
+        value.push(Bytes::from("SecondPush"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "LPUSH".to_string(),
+            value,
+            KeyType::List,
+            Write
+        );
+        let result = db.execute_command(&command);
+        assert_eq!(result.unwrap().get_response(), ":2\r\n");
+        assert_eq!(db.internal_get_length(), 1);
+        assert_eq!(db.internal_get_list_length("key"), 2);
+    }
+
+    #[test]
     fn given_empty_list_when_rpop_then_return_null() {
         let db = ListExecutor::new();
         let command = CommandIdentifier::new(
@@ -510,6 +587,24 @@ mod tests {
     }
 
     #[test]
+    fn given_list_with_two_elements_when_rpop_then_return_two_elements() {
+        let db = setup_list_with_multiple_elements("key", 2);
+        let mut value = Vec::new();
+        value.push(Bytes::from("2"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "RPOP".to_string(),
+            value,
+            KeyType::List,
+            Write,
+        );
+        let result = db.execute_command(&command);
+        assert_eq!(result.unwrap().get_response(), "*2\r\nElement1\r\nElement0\r\n");
+        assert_eq!(db.internal_get_length(), 0);
+    }
+
+    #[test]
     fn given_list_with_multiple_elements_when_rpop_then_return_element() {
         let db = setup_list_with_multiple_elements("key", 2);
         let command = CommandIdentifier::new(
@@ -522,6 +617,25 @@ mod tests {
         );
         let result = db.execute_command(&command);
         assert_eq!(result.unwrap().get_response(), "+Element1\r\n");
+        assert_eq!(db.internal_get_length(), 1);
+        assert_eq!(db.internal_get_list_length("key"), 1);
+    }
+
+    #[test]
+    fn given_list_with_three_elements_when_rpop_then_return_two_elements() {
+        let db = setup_list_with_multiple_elements("key", 3);
+        let mut value = Vec::new();
+        value.push(Bytes::from("2"));
+        let command = CommandIdentifier::new(
+            RedisCommandType::StringCommand,
+            "key".to_string(),
+            "RPOP".to_string(),
+            value,
+            KeyType::List,
+            Write,
+        );
+        let result = db.execute_command(&command);
+        assert_eq!(result.unwrap().get_response(), "*2\r\nElement2\r\nElement1\r\n");
         assert_eq!(db.internal_get_length(), 1);
         assert_eq!(db.internal_get_list_length("key"), 1);
     }
@@ -565,6 +679,30 @@ mod tests {
         assert_eq!(db.internal_get_list_head("key"), Some(Bytes::from("Element1")));
     }
 
+    #[test]
+    fn given_raw_command_when_parse_return_valid_command() {
+        let valid_commands: Vec<(Vec<String>, &str)> = vec![
+            (vec!["LLEN".to_string(), "key".to_string()], "LLEN"),
+            (vec!["LINDEX".to_string(), "key".to_string(), "0".to_string()], "LINDEX"),
+            (vec!["RPUSH".to_string(), "key".to_string(), "value".to_string()], "RPUSH"),
+            (vec!["RPUSH".to_string(), "key".to_string(), "value".to_string(), "value2".to_string()], "RPUSH"),
+            (vec!["RPOP".to_string(), "key".to_string()], "RPOP"),
+            (vec!["RPOP".to_string(), "key".to_string(), "2".to_string()], "RPOP"),
+            (vec!["LPUSH".to_string(), "key".to_string(), "value".to_string()], "LPUSH"),
+            (vec!["LPUSH".to_string(), "key".to_string(), "value".to_string(), "value2".to_string()], "LPUSH"),
+            (vec!["LPOP".to_string(), "key".to_string()], "LPOP"),
+        ];
+
+        valid_commands.iter().for_each(|(request, expected_action)| {
+            match ListExecutor::build_command(request) {
+                Ok(command) => assert_eq!(command.get_action(), *expected_action),
+                Err(error) => {
+                    panic!("Should not have returned an error: {}", error.get_message());
+                }
+            }
+        })
+    }
+
     fn setup_list_with_multiple_elements(key_name: &str, size: usize) -> ListExecutor {
         let db = ListExecutor::new();
         for i in 0..size {
@@ -582,4 +720,6 @@ mod tests {
         }
         db
     }
+
+
 }

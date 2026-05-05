@@ -290,6 +290,7 @@ mod tests {
     use crate::index::{CommandIdentifier, KeyType, RedisCommandType};
     use crate::string_executor::StringExecutor;
     use bytes::Bytes;
+    use crate::list_executor::ListExecutor;
 
     #[test]
     fn given_valid_key_when_get_return_value() {
@@ -478,6 +479,26 @@ mod tests {
         assert_eq!(err.get_message(), "-ERR value is not an integer or out of range");
     }
 
+    #[test]
+    fn given_raw_command_when_parse_return_valid_command() {
+        let valid_commands: Vec<(Vec<String>, &str)> = vec![
+            (vec!["GET".to_string(), "key".to_string()], "GET"),
+            (vec!["SET".to_string(), "key".to_string(), "value".to_string()], "SET"),
+            (vec!["INCR".to_string(), "key".to_string()], "INCR"),
+            (vec!["INCRBY".to_string(), "key".to_string(), "1".to_string()], "INCRBY"),
+            (vec!["DECR".to_string(), "key".to_string()], "DECR"),
+            (vec!["DECRBY".to_string(), "key".to_string(), "1".to_string()], "DECRBY"),
+        ];
+
+        valid_commands.iter().for_each(|(request, expected_action)| {
+            match StringExecutor::build_command(request) {
+                Ok(command) => assert_eq!(command.get_action(), *expected_action),
+                Err(error) => {
+                    panic!("Should not have returned an error: {}", error.get_message());
+                }
+            }
+        })
+    }
 
 
     fn setup_db_with_string(db: &StringExecutor) {

@@ -137,7 +137,7 @@ impl Index {
             if StringExecutor::is_command_supported(&command) {
                 StringExecutor::build_command(&request)?
             } else if self.is_index_command(&command) {
-                self.build_index_command(&request)?
+                self.build_command(&request)?
             } else if ListExecutor::is_command_supported(&command) {
                 ListExecutor::build_command(&request)?
             } else {
@@ -208,7 +208,7 @@ impl Index {
             .any(|&cmd| cmd.eq_ignore_ascii_case(command))
     }
 
-    fn build_index_command(&self, command: &Vec<String>) -> Result<CommandIdentifier, ParserError> {
+    fn build_command(&self, command: &Vec<String>) -> Result<CommandIdentifier, ParserError> {
         // support syntax: EXISTS name
         //                 DEL name
         //                 RENAME oldname newname
@@ -324,7 +324,7 @@ impl Index {
             }
             let destination_key = std::str::from_utf8(&command.get_params()[0]).unwrap();
             // Delete the destination key if it exists
-            let delete_command = self.build_index_command(&vec!["DEL".to_string(), destination_key.to_string()])?;
+            let delete_command = self.build_command(&vec!["DEL".to_string(), destination_key.to_string()])?;
             self.internal_execute_command(&databases, &delete_command, index)?;
 
             if original_key_type == &KeyType::String {
@@ -565,6 +565,26 @@ mod tests {
             },
             Err(error) => panic!("Error executing command: {:?}", error)
         }
+    }
+
+    #[test]
+    fn given_raw_command_when_parse_return_valid_command() {
+        let valid_commands: Vec<(Vec<String>, &str)> = vec![
+            (vec!["EXISTS".to_string(), "key".to_string()], "EXISTS"),
+            (vec!["DEL".to_string(), "key".to_string()], "DEL"),
+            (vec!["RENAME".to_string(), "oldkey".to_string(), "newkey".to_string()], "RENAME")
+        ];
+
+        let this = Index::new();
+
+        valid_commands.iter().for_each(|(request, expected_action)| {
+            match this.build_command(request) {
+                Ok(command) => assert_eq!(command.get_action(), *expected_action),
+                Err(error) => {
+                    panic!("Should not have returned an error: {}", error.get_message());
+                }
+            }
+        })
     }
 
     fn set_a_string_value(index: &Arc<Index>, databases: &Arc<Databases>, key: &str, value: &str) -> Result<Bytes, ExecutionError> {
